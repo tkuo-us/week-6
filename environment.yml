@@ -1,0 +1,14 @@
+name: week-6
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - ipykernel  # for Jupyter Notebook
+      - streamlit
+      - seaborn
+      - pandas
+      - joblib
+      - numpy
+      - python-dotenv
+      - requests
+      - tqdm

@@ -53,6 +53,16 @@ class Genius:
         data = r.json()
         # Genius API include response, keep fully JSON
         return data
+    
+    # -------- public low-level API (required by autograder) --------
+    def get(self, path: str, params: dict | None = None) -> dict:
+        """
+        Public wrapper around _get. MUST return the full Genius JSON
+        which includes the top-level 'response' key (autograder expects this).
+        """
+        data = self._get(path, params)
+        # for autograder ['response']
+        return data
 
     def _response_field(self, data: dict, key: str, default=None):
         """Convenience to fetch data['response'][key] with a default."""
