@@ -7,6 +7,11 @@ import typing as t
 import requests
 import pandas as pd
 
+import string
+from typing import Iterable, Dict, Any
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+
 
 class Genius:
     """
@@ -21,7 +26,7 @@ class Genius:
 
     BASE_URL = "https://api.genius.com"
 
-    def __init__(self, access_token: str | None = None, *, timeout: int = 20):
+    def __init__(self, access_token: str | None = None, *, timeout: int = 20, per_call_sleep: float = 0.05):
         # allow token
         token = access_token or os.environ.get("GENIUS_ACCESS_TOKEN")
         if not token:
@@ -30,7 +35,9 @@ class Genius:
                 "Pass access_token=... or set GENIUS_ACCESS_TOKEN env var."
             )
         self.access_token = token
+        self._token = token
         self.timeout = timeout
+        self.per_call_sleep = per_call_sleep
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {self.access_token}"})
 
@@ -109,3 +116,106 @@ class Genius:
             time.sleep(0.1)
 
         return pd.DataFrame(rows)
+    
+    # ---------- Bonus 1: Gather a list of 100+ various musical artists ----------
+    def collect_artist_names(
+        self,
+        seeds: Iterable[str] | None = None,
+        *,
+        target: int = 120,
+        per_page: int = 50, 
+        max_pages: int = 10, 
+        out_txt: str | None = None,
+    ) -> list[str]:
+        """
+        Using /search?q=<seed> gather primary artist name
+        - seeds: a-z/0-9
+        - target: at least
+        - per_page/max_pages: change to next page
+        """
+        if seeds is None:
+            seeds = list("abcdefghijklmnopqrstuvwxyz")
+
+        names: dict[str, None] = {}
+
+        for seed in seeds:
+            for page in range(1, max_pages + 1):
+                try:
+                    data = self._get("/search", params={"q": seed, "page": page, "per_page": per_page})
+                    hits: list[dict] = self._response_field(data, "hits", default=[]) or []
+                    if not hits:
+                        break
+
+                    for h in hits:
+                        primary = (h.get("result") or {}).get("primary_artist") or {}
+                        name = (primary.get("name") or "").strip()
+                        if name:
+                            names[name] = None
+
+                    if self.per_call_sleep > 0:
+                        time.sleep(self.per_call_sleep)
+
+                except Exception:
+                    # check
+                    continue
+
+            if len(names) >= target:
+                break
+
+        out = sorted(names.keys())
+        if out_txt:
+            self.save_list(out, out_txt)
+        return out
+
+    def get_artists_mp(self, search_terms: Iterable[str], workers: int = 8) -> pd.DataFrame:
+        terms = [str(t).strip() for t in search_terms if str(t).strip()]
+        rows: list[dict] = []
+        if not terms:
+            return pd.DataFrame(rows)
+
+        # Using: access_token / timeout / per_call_sleep
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futures = [
+                ex.submit(_mp_fetch_one, term, self.access_token, self.timeout, self.per_call_sleep)
+                for term in terms
+            ]
+            for fut in as_completed(futures):
+                try:
+                    res = fut.result()
+                    if res:
+                        rows.append(res)
+                except Exception as e:
+                    rows.append({"search_term": None, "artist_name": None, "artist_id": None, "followers_count": None, "_error": str(e)})
+
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def save_list(items: Iterable[str], path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            for x in items:
+                f.write(f"{x}\n")
+
+    @staticmethod
+    def save_df(df: pd.DataFrame, path: str) -> None:
+        df.to_csv(path, index=False)
+
+
+# module-level worker for multiprocessing
+def _mp_fetch_one(term: str, token: str, timeout: float, per_call_sleep: float) -> Dict[str, Any]:
+    try:
+        g = Genius(access_token=token, timeout=timeout, per_call_sleep=per_call_sleep)
+        artist = g.get_artist(term)
+        return {
+            "search_term": term,
+            "artist_name": artist.get("name"),
+            "artist_id": artist.get("id"),
+            "followers_count": artist.get("followers_count"),
+        }
+    except Exception as e:
+        return {
+            "search_term": term,
+            "artist_name": None,
+            "artist_id": None,
+            "followers_count": None,
+            "_error": str(e),
+        }
